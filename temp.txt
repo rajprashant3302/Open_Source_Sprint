@@ -1,0 +1,33 @@
+  /**
+   * Update task status
+   */
+  // static async updateTaskStatus(taskId: string, status: TaskStatus, metadata?: Record<string, any>): Promise<void> {
+  //   const client = getRedisClient();
+  //   const worker = (metadata as any)?.workerId;
+  //   console.log(`\n[${worker}] START`);
+  //   const task = await this.getTask(taskId);
+
+  //   console.log(`[${worker}] READ ->`,JSON.stringify({status: task?.status,workerId: (task as any)?.workerId,note: (task as any)?.note}));
+
+  //   if (!task) {
+  //     throw new Error(`Task ${taskId} not found`);
+  //   }
+
+  //   task.status = status;
+  //   if (metadata) {
+  //     Object.assign(task, metadata);
+  //   }
+
+  //   if (status === 'completed') {
+  //     task.completedAt = new Date();
+  //   } else if (status === 'processing') {
+  //     task.startedAt = new Date();
+  //   }
+
+  //   console.log(`[${worker}] WRITE ->`,JSON.stringify({status: task.status,workerId: (task as any)?.workerId,note: (task as any)?.note}));
+
+  //   await client.set(`${TASK_PREFIX}${taskId}`, JSON.stringify(task));
+
+  //   console.log(`[${worker}] SAVED`);
+  //   logger.info({ taskId, status }, 'Task status updated');
+  // }
