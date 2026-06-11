@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getRedisClient } from './redis';
 import logger from '../utils/logger';
-import { Task, TaskStatus, Queue, RecurrenceRule } from '../types';
+import { Task, TaskStatus, Queue, RecurrenceRule, TaskBranch } from '../types';
 
 const TASK_PREFIX = 'task:';
 const QUEUE_PREFIX = 'queue:';
@@ -124,6 +124,31 @@ export class TaskQueue {
 
     logger.info({ count: created.length }, 'Batch of tasks created');
     return created;
+  }
+
+  /**
+   * Evaluate a task's conditional branches against its result and return the
+   * branches that match, so the caller can enqueue the next step(s). A
+   * condition prefixed with `regex:` is matched as a regular expression against
+   * the stringified result; otherwise a substring match is used. Multiple
+   * branches may match.
+   */
+  static evaluateBranches(task: Task, result: any): TaskBranch[] {
+    if (!task.branches || task.branches.length === 0) {
+      return [];
+    }
+    const resultStr = typeof result === 'string' ? result : JSON.stringify(result ?? '');
+
+    return task.branches.filter((branch) => {
+      if (branch.condition.startsWith('regex:')) {
+        try {
+          return new RegExp(branch.condition.slice('regex:'.length)).test(resultStr);
+        } catch {
+          return false; // invalid regex never matches
+        }
+      }
+      return resultStr.includes(branch.condition);
+    });
   }
 
   /**
