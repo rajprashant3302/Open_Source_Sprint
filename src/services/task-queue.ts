@@ -167,6 +167,31 @@ export class TaskQueue {
   }
 
   /**
+   * Cancel a task. Terminal tasks (completed/failed/already cancelled) cannot
+   * be cancelled and return false. Otherwise the task is marked `cancelled` and
+   * removed from its queue so it won't be dispatched. Returns true on success.
+   */
+  static async cancelTask(taskId: string): Promise<boolean> {
+    const client = getRedisClient();
+    const task = await this.getTask(taskId);
+
+    if (!task) {
+      throw new Error(`Task ${taskId} not found`);
+    }
+
+    if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+      return false;
+    }
+
+    task.status = 'cancelled';
+    await client.set(`${TASK_PREFIX}${taskId}`, JSON.stringify(task));
+    await client.zRem(`${QUEUE_PREFIX}${task.queue}`, taskId);
+
+    logger.info({ taskId }, 'Task cancelled');
+    return true;
+  }
+
+  /**
    * Get all tasks from queue
    */
   static async getQueueTasks(queueName: string, limit: number = 100, offset: number = 0): Promise<Task[]> {

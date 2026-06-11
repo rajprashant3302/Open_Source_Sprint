@@ -3,12 +3,35 @@ import { Task, TaskStatus } from '../types';
 import { TaskQueue } from './task-queue';
 import { WorkerPool } from './worker-pool';
 
+export interface TaskExecutionContext {
+  /** Handlers can poll this to cooperatively stop work when cancelled. */
+  isCancelled: () => boolean;
+}
+
 export interface TaskHandler {
-  (payload: Record<string, any>): Promise<any>;
+  (payload: Record<string, any>, context?: TaskExecutionContext): Promise<any>;
 }
 
 export class TaskExecutor {
   private static handlers: Map<string, TaskHandler> = new Map();
+  private static cancelledTasks: Set<string> = new Set();
+
+  /**
+   * Request cancellation of a task. Removes it from the queue side via
+   * TaskQueue.cancelTask; here we record the signal so a running handler can
+   * observe it and the executor skips it if not yet started.
+   */
+  static cancel(taskId: string): void {
+    this.cancelledTasks.add(taskId);
+  }
+
+  static isCancelled(taskId: string): boolean {
+    return this.cancelledTasks.has(taskId);
+  }
+
+  static clearCancellation(taskId: string): void {
+    this.cancelledTasks.delete(taskId);
+  }
 
   /**
    * Register a task handler
@@ -26,6 +49,13 @@ export class TaskExecutor {
     let timeoutHandle: NodeJS.Timeout | undefined;
 
     try {
+      // Skip tasks cancelled before they start.
+      if (this.isCancelled(task.id)) {
+        await TaskQueue.updateTaskStatus(task.id, 'cancelled');
+        logger.info({ taskId: task.id }, 'Task cancelled before execution');
+        return;
+      }
+
       // Validate handler exists
       const handler = this.handlers.get(task.handler);
       if (!handler) {
@@ -45,15 +75,25 @@ export class TaskExecutor {
 
       await WorkerPool.updateWorkerStatus(workerId, 'busy');
 
-      // Execute with timeout
+      // Execute with timeout, passing a cancellation-aware context.
+      const context: TaskExecutionContext = {
+        isCancelled: () => this.isCancelled(task.id),
+      };
       const result = await Promise.race([
-        handler(task.payload),
+        handler(task.payload, context),
         new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
             reject(new Error(`Task execution timeout after ${task.timeout}ms`));
           }, task.timeout);
         }),
       ]);
+
+      // If the task was cancelled mid-flight, record it rather than completing.
+      if (this.isCancelled(task.id)) {
+        await TaskQueue.updateTaskStatus(task.id, 'cancelled');
+        logger.info({ taskId: task.id }, 'Task cancelled during execution');
+        return;
+      }
 
       // Mark as completed
       await TaskQueue.updateTaskStatus(task.id, 'completed', {
@@ -105,6 +145,7 @@ export class TaskExecutor {
       }
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      this.clearCancellation(task.id);
       await WorkerPool.updateWorkerStatus(workerId, 'idle');
     }
   }
