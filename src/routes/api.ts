@@ -1,5 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
-import { TaskQueue } from '../services/task-queue';
+import { TaskQueue, DependencyCycleError } from '../services/task-queue';
 import { WorkerPool } from '../services/worker-pool';
 import { TaskExecutor } from '../services/task-executor';
 import { TaskScheduler } from '../services/task-scheduler';
@@ -42,6 +42,9 @@ router.post('/tasks', async (req: Request, res: Response) => {
 
     res.status(201).json(task);
   } catch (error: any) {
+    if (error instanceof DependencyCycleError) {
+      return res.status(400).json({ error: error.message, cycle: error.cycle });
+    }
     logger.error({ error }, 'Create task error');
     res.status(500).json({ error: error.message });
   }
