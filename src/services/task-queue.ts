@@ -228,6 +228,53 @@ export class TaskQueue {
     return deleted;
   }
 
+  /**
+   * Recover tasks orphaned by a crashed worker.
+   *
+   * A task whose worker dies stays in "processing" forever. This finds tasks
+   * that have been processing longer than `staleMs`, resets them to "queued",
+   * detaches the dead worker, and re-enqueues them so another worker can pick
+   * them up. Returns the number of tasks recovered.
+   */
+  static async recoverStaleTasks(staleMs: number = 5 * 60 * 1000): Promise<number> {
+    const client = getRedisClient();
+    const taskIds = await client.zRange(TASK_INDEX_KEY, 0, -1);
+    const now = Date.now();
+    let recovered = 0;
+
+    for (const taskId of taskIds) {
+      const task = await this.getTask(taskId);
+      if (!task || task.status !== 'processing') {
+        continue;
+      }
+
+      const startedAt = task.startedAt ? new Date(task.startedAt).getTime() : 0;
+      if (startedAt === 0 || now - startedAt < staleMs) {
+        continue;
+      }
+
+      const previousWorker = task.workerId;
+      task.status = 'queued';
+      task.workerId = undefined;
+      await client.set(`${TASK_PREFIX}${taskId}`, JSON.stringify(task));
+
+      const queueKey = `${QUEUE_PREFIX}${task.queue}`;
+      const score = this._calculateQueueScore(task.priority);
+      await client.zAdd(queueKey, { score, value: taskId });
+
+      recovered++;
+      logger.warn(
+        { taskId, previousWorker, stalledForMs: now - startedAt },
+        'Recovered orphaned task stuck in processing'
+      );
+    }
+
+    if (recovered > 0) {
+      logger.info({ recovered }, 'Orphaned tasks recovered');
+    }
+    return recovered;
+  }
+
   // Private helper methods
 
   private static _calculateQueueScore(priority: string): number {
