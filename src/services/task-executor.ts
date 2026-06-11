@@ -2,6 +2,7 @@ import logger from '../utils/logger';
 import { Task, TaskStatus } from '../types';
 import { TaskQueue } from './task-queue';
 import { WorkerPool } from './worker-pool';
+import { TaskHooks } from './task-hooks';
 
 export interface TaskHandler {
   (payload: Record<string, any>): Promise<any>;
@@ -44,6 +45,7 @@ export class TaskExecutor {
       });
 
       await WorkerPool.updateWorkerStatus(workerId, 'busy');
+      await TaskHooks.emitTask('task.started', task);
 
       // Execute with timeout
       const result = await Promise.race([
@@ -70,6 +72,8 @@ export class TaskExecutor {
         cpu: 0,
       });
 
+      await TaskHooks.emitTask('task.completed', { ...task, status: 'completed', result });
+
       logger.info({ taskId: task.id, duration }, 'Task completed successfully');
     } catch (error: any) {
       const duration = Date.now() - startTime;
@@ -79,6 +83,11 @@ export class TaskExecutor {
 
       // Attempt retry
       const retried = await TaskQueue.retryTask(task.id);
+      await TaskHooks.emitTask(retried ? 'task.retried' : 'task.failed', {
+        ...task,
+        status: retried ? 'retry' : 'failed',
+        error: errorMessage,
+      });
 
       if (retried) {
         await WorkerPool.completeTask(workerId, task.id, {
