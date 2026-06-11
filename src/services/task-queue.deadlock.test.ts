@@ -35,6 +35,7 @@ function makeClient(store: Record<string, string>) {
       return Promise.resolve('OK');
     }),
     zAdd: jest.fn().mockResolvedValue(1),
+    zCard: jest.fn().mockResolvedValue(0),
     hIncrBy: jest.fn().mockResolvedValue(1),
   } as any;
 }
