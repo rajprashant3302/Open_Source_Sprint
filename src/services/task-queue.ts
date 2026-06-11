@@ -133,13 +133,22 @@ export class TaskQueue {
   }
 
   /**
-   * Get next task from queue (considering priority and dependencies)
+   * Get next task from queue.
+   *
+   * Priority semantics: tasks are ordered by a priority-derived score
+   * (critical > high > medium > low) in the queue sorted set, and this returns
+   * the highest-priority task that is actually runnable (dependencies met and
+   * not scheduled for the future). The full queue is scanned in priority order
+   * rather than only the top N, so a runnable high-priority task is never
+   * skipped because lower-priority or blocked tasks happen to sort ahead in a
+   * truncated window — i.e. no priority inversion.
    */
   static async getNextTask(queueName: string): Promise<Task | null> {
     const client = getRedisClient();
     const queueKey = `${QUEUE_PREFIX}${queueName}`;
 
-    const taskIds = await client.zRange(queueKey, 0, 9, { REV: true }); // Get top 10 by priority
+    // Scan the whole queue from highest to lowest priority.
+    const taskIds = await client.zRange(queueKey, 0, -1, { REV: true });
 
     for (const taskId of taskIds) {
       const task = await this.getTask(taskId);
