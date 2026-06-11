@@ -83,28 +83,101 @@ export class TaskQueue {
   /**
    * Update task status
    */
-  static async updateTaskStatus(taskId: string, status: TaskStatus, metadata?: Record<string, any>): Promise<void> {
-    const client = getRedisClient();
-    const task = await this.getTask(taskId);
+static async updateTaskStatus(taskId: string, status: TaskStatus, metadata?: Record<string, any>): Promise<void> {
+    const baseClient = getRedisClient();
+    const txClient = baseClient.duplicate();
 
-    if (!task) {
-      throw new Error(`Task ${taskId} not found`);
+    await txClient.connect();
+
+    const key = `${TASK_PREFIX}${taskId}`;
+    const worker = (metadata as any)?.workerId ?? 'unknown';
+
+    try {
+
+      while (true) {
+
+        console.log(`\n[${worker}] WATCHING ${key}`);
+
+        await txClient.watch(key);
+
+        const data = await txClient.get(key);
+
+        if (!data) {
+          await txClient.unwatch();
+          throw new Error(`Task ${taskId} not found`);
+        }
+
+        const task: Task = JSON.parse(data);
+
+        console.log(`[${worker}] READ ->`,
+          JSON.stringify({
+            status: task.status,
+            workerId: (task as any).workerId
+          }));
+
+        task.status = status;
+
+        if (metadata) {
+          Object.assign(task, metadata);
+        }
+
+        if (status === 'completed') {
+          task.completedAt = new Date();
+        } else if (status === 'processing') {
+          task.startedAt = new Date();
+        }
+
+        console.log(`[${worker}] PREPARED ->`,
+          JSON.stringify({
+            status: task.status,
+            workerId: (task as any).workerId
+          }));
+
+        const multi = txClient.multi();
+
+        multi.set(key,JSON.stringify(task));
+
+        console.log(`[${worker}] EXECUTING TRANSACTION`);
+
+        try {
+
+          const result = await multi.exec();
+
+          console.log(
+            `[${worker}] EXEC RESULT ->`,
+            result
+          );
+
+          console.log(
+            `[${worker}] SUCCESS`
+          );
+
+          logger.info(
+            { taskId, status },
+            'Task status updated'
+          );
+
+          return;
+
+        } catch (err: any) {
+
+          console.log(
+            `[${worker}] WATCH CONFLICT -> RETRYING`
+          );
+
+          logger.warn(
+            { taskId, worker },
+            'Concurrent update detected, retrying'
+          );
+
+          continue;
+        }
+      }
+
+      } finally {
+        await txClient.quit();
+      }
     }
-
-    task.status = status;
-    if (metadata) {
-      Object.assign(task, metadata);
-    }
-
-    if (status === 'completed') {
-      task.completedAt = new Date();
-    } else if (status === 'processing') {
-      task.startedAt = new Date();
-    }
-
-    await client.set(`${TASK_PREFIX}${taskId}`, JSON.stringify(task));
-    logger.info({ taskId, status }, 'Task status updated');
-  }
 
   /**
    * Get next task from queue (considering priority and dependencies)
