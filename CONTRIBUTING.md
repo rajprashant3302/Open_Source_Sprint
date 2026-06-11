@@ -1,7 +1,3 @@
-# Contributing to TaskFlow
-
-Thank you for contributing to TaskFlow! This guide will help you get started.
-
 ## Prerequisites
 
 - Node.js 18+
@@ -31,13 +27,6 @@ Thank you for contributing to TaskFlow! This guide will help you get started.
    ```bash
    npm test
    ```
-
-## Claiming Issues
-
-1. Check the [Issues](../../issues) page for open issues
-2. Comment on the issue you want to work on
-3. Wait for a maintainer to assign it to you
-4. Only work on assigned issues to avoid duplicate effort
 
 ## Issue Difficulty Levels
 
@@ -106,11 +95,3 @@ src/
 └── utils/
     └── logger.ts           # Logging utility
 ```
-
-## Need Help?
-
-- Check existing issues and PRs for context
-- Ask questions on the issue thread
-- Reach out to maintainers
-
-Happy contributing! 🚀
