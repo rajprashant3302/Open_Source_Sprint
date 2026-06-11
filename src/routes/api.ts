@@ -5,6 +5,7 @@ import { TaskExecutor } from '../services/task-executor';
 import { TaskScheduler } from '../services/task-scheduler';
 import { MetricsCollector } from '../services/metrics-collector';
 import logger from '../utils/logger';
+import { getRedisHealth } from '../services/redis';
 
 const router = express.Router();
 
@@ -149,10 +150,18 @@ router.post('/workers/:workerId/heartbeat', async (req: Request, res: Response) 
 router.get('/health', async (req: Request, res: Response) => {
   try {
     const health = await MetricsCollector.getHealthStatus();
-    res.json(health);
+
+    res.json({
+      ...health,
+      redis: getRedisHealth(),
+    });
   } catch (error: any) {
     logger.error({ error }, 'Health check error');
-    res.status(500).json({ error: error.message });
+
+    res.status(500).json({
+      error: error.message,
+      redis: getRedisHealth(),
+    });
   }
 });
 
