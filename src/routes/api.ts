@@ -4,6 +4,7 @@ import { WorkerPool } from '../services/worker-pool';
 import { TaskExecutor } from '../services/task-executor';
 import { TaskScheduler } from '../services/task-scheduler';
 import { MetricsCollector } from '../services/metrics-collector';
+import { getRedisStatus } from '../services/redis';
 import logger from '../utils/logger';
 
 const router = express.Router();
@@ -154,6 +155,11 @@ router.get('/health', async (req: Request, res: Response) => {
     logger.error({ error }, 'Health check error');
     res.status(500).json({ error: error.message });
   }
+});
+
+router.get('/health/redis', (req: Request, res: Response) => {
+  const status = getRedisStatus();
+  res.status(status.connected ? 200 : 503).json(status);
 });
 
 router.get('/metrics', async (req: Request, res: Response) => {
