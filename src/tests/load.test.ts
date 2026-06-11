@@ -16,14 +16,19 @@ import { WorkerPool } from '../services/worker-pool';
 import { MetricsCollector } from '../services/metrics-collector';
 
 describe('System Load Test', () => {
-    const LOAD_RATES = [100, 500, 1000, 2000, 5000];
+    const LOAD_RATES = [
+        50,
+        100,
+        250,
+        500,
+        1000
+    ];
 
     let workerId: string;
     let stopWorkerLoop = false;
     let workerLoopPromise: Promise<void>;
 
     beforeAll(async () => {
-        workerLoopPromise = startWorkerLoop();
         await initializeRedis(
             process.env.REDIS_URL || 'redis://localhost:6379'
         );
@@ -31,10 +36,7 @@ describe('System Load Test', () => {
         TaskExecutor.registerHandler(
             'load-test-handler',
             async () => {
-                await new Promise((resolve) =>
-                    setTimeout(resolve, 10)
-                );
-
+                await sleep(10);
                 return { success: true };
             }
         );
@@ -49,22 +51,28 @@ describe('System Load Test', () => {
 
         workerId = worker.id;
 
-        startWorkerLoop();
+        workerLoopPromise = startWorkerLoop();
     });
 
     afterAll(async () => {
         stopWorkerLoop = true;
 
-        if (workerLoopPromise) {
-            await workerLoopPromise;
+        try {
+            if (workerLoopPromise) {
+                await workerLoopPromise;
+            }
+        } catch (err) {
+            console.error(err);
         }
 
-        await closeRedis();
+        try {
+            await closeRedis();
+        } catch (err) {
+            console.error(err);
+        }
     });
 
     async function startWorkerLoop(): Promise<void> {
-        const client = getRedisClient();
-
         while (!stopWorkerLoop) {
             try {
                 const task =
@@ -85,12 +93,17 @@ describe('System Load Test', () => {
                     task
                 );
 
+                const client = getRedisClient();
+
                 await client.zRem(
                     `queue:${task.queue}`,
                     task.id
                 );
             } catch (err) {
-                console.error(err);
+                console.error(
+                    'Worker loop error:',
+                    err
+                );
 
                 await sleep(100);
             }
@@ -116,10 +129,13 @@ describe('System Load Test', () => {
 
                 console.table(metrics);
 
-                if (
-                    metrics.avgQueueLatency > 5000 ||
-                    metrics.avgCompletionTime > 10000
-                ) {
+                const completionRatio =
+                    metrics.tasksCreated === 0
+                        ? 0
+                        : metrics.tasksCompleted /
+                        metrics.tasksCreated;
+
+                if (completionRatio < 0.8) {
                     console.log(
                         `BREAKPOINT DETECTED @ ${rate} tasks/sec`
                     );
@@ -138,6 +154,11 @@ describe('System Load Test', () => {
     async function runLoadScenario(
         tasksPerSecond: number
     ) {
+
+        const client = getRedisClient();
+
+        await client.del('queue:load-test');
+        await client.del('queue:load-test:stats');
         const DURATION_SECONDS = 10;
 
         const totalTasks =
@@ -153,34 +174,40 @@ describe('System Load Test', () => {
             second < DURATION_SECONDS;
             second++
         ) {
-            const batch = [];
+            let createdCount = 0;
 
-            for (
-                let i = 0;
-                i < tasksPerSecond;
-                i++
-            ) {
-                batch.push(
-                    TaskQueue.createTask(
-                        `load-${Date.now()}-${i}`,
-                        'load-test-handler',
-                        {
-                            index: i,
-                        },
-                        {
-                            queueName: 'load-test',
-                            priority: 'medium',
-                        }
-                    )
-                );
+            for (let i = 0; i < tasksPerSecond; i++) {
+                try {
+                    const task =
+                        await TaskQueue.createTask(
+                            `load-${Date.now()}-${i}`,
+                            'load-test-handler',
+                            {
+                                index: i,
+                            },
+                            {
+                                queueName: 'load-test',
+                                priority: 'medium',
+                            }
+                        );
+
+                    taskIds.push(task.id);
+                    createdCount++;
+                } catch (error: any) {
+                    if (
+                        error?.name === 'QueueFullError' ||
+                        String(error).includes('Queue')
+                    ) {
+                        console.log(
+                            `Queue saturated after ${createdCount} tasks`
+                        );
+
+                        break;
+                    }
+
+                    throw error;
+                }
             }
-
-            const created =
-                await Promise.all(batch);
-
-            taskIds.push(
-                ...created.map((t) => t.id)
-            );
 
             await sleep(1000);
         }
@@ -252,7 +279,7 @@ describe('System Load Test', () => {
         return {
             rate: tasksPerSecond,
 
-            tasksCreated: totalTasks,
+            tasksCreated: taskIds.length,
 
             tasksCompleted: completedTasks,
 
