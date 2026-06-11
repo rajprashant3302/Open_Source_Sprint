@@ -17,6 +17,20 @@ export interface SystemMetrics {
 export class MetricsCollector {
   private static collectionRunning = false;
 
+  // Maximum number of snapshots to retain. Older snapshots are pruned after
+  // each capture so the snapshot set stays a bounded sliding window rather than
+  // growing until the 7-day TTL expires.
+  private static maxSnapshots = 1000;
+
+  /**
+   * Configure how many snapshots to keep (sliding-window retention).
+   */
+  static setMaxSnapshots(max: number): void {
+    if (max > 0) {
+      this.maxSnapshots = max;
+    }
+  }
+
   /**
    * Start collecting metrics periodically
    */
@@ -102,9 +116,40 @@ export class MetricsCollector {
     const snapshotKey = `${SNAPSHOT_PREFIX}${Date.now()}`;
     await client.set(snapshotKey, JSON.stringify(metrics), { EX: 7 * 24 * 60 * 60 });
 
+    // Enforce the retention window so snapshots don't accumulate unbounded.
+    await this._pruneOldSnapshots();
+
     logger.debug({ timestamp }, 'Metrics snapshot captured');
 
     return metrics;
+  }
+
+  /**
+   * Delete snapshots beyond the configured retention limit, keeping the newest
+   * `maxSnapshots` by numeric timestamp.
+   */
+  private static async _pruneOldSnapshots(): Promise<void> {
+    const client = getRedisClient();
+    const keys = await client.keys(`${SNAPSHOT_PREFIX}*`);
+
+    if (keys.length <= this.maxSnapshots) {
+      return;
+    }
+
+    const sortedNewestFirst = keys.sort(
+      (a, b) => this._extractSnapshotTimestamp(b) - this._extractSnapshotTimestamp(a)
+    );
+    const toDelete = sortedNewestFirst.slice(this.maxSnapshots);
+
+    for (const key of toDelete) {
+      await client.del(key);
+    }
+
+    logger.debug({ pruned: toDelete.length, retained: this.maxSnapshots }, 'Old metric snapshots pruned');
+  }
+
+  private static _extractSnapshotTimestamp(key: string): number {
+    return parseInt(key.slice(SNAPSHOT_PREFIX.length), 10) || 0;
   }
 
   /**
