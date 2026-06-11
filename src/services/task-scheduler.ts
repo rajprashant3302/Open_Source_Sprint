@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import { v4 as uuidv4 } from 'uuid';
 import { getRedisClient } from './redis';
 import logger from '../utils/logger';
 import { TaskQueue } from './task-queue';
@@ -91,45 +92,50 @@ export class TaskScheduler {
 
         // Acquire lock for distributed scheduling
         const lockKey = `${SCHEDULER_LOCK}`;
-        const lockId = `scheduler-${Date.now()}`;
+        const lockId = `scheduler-${uuidv4()}`;
 
         const acquired = await client.set(lockKey, lockId, {
           NX: true,
           EX: 10,
         });
 
-        if (!acquired) {
-          // Another instance is processing
-          return;
-        }
+        if (acquired) {
+          // Get all tasks due to run
+          const dueTasks = await client.zRange(SCHEDULED_TASKS_KEY, 0, now, { BY: 'SCORE' });
 
-        // Get all tasks due to run
-        const dueTasks = await client.zRange(SCHEDULED_TASKS_KEY, 0, now, { BY: 'SCORE' });
+          for (const taskData of dueTasks) {
+            try {
+              const { taskId } = JSON.parse(taskData);
+              const task = await TaskQueue.getTask(taskId);
 
-        for (const taskData of dueTasks) {
-          try {
-            const { taskId } = JSON.parse(taskData);
-            const task = await TaskQueue.getTask(taskId);
+              if (task) {
+                // Move to queue for processing
+                await TaskQueue.updateTaskStatus(taskId, 'queued');
+                logger.info({ taskId }, 'Scheduled task moved to queue');
+              }
 
-            if (task) {
-              // Move to queue for processing
-              await TaskQueue.updateTaskStatus(taskId, 'queued');
-              logger.info({ taskId }, 'Scheduled task moved to queue');
+              await client.zRem(SCHEDULED_TASKS_KEY, taskData);
+            } catch (error) {
+              logger.error({ error, taskData }, 'Failed to process scheduled task');
             }
-
-            await client.zRem(SCHEDULED_TASKS_KEY, taskData);
-          } catch (error) {
-            logger.error({ error, taskData }, 'Failed to process scheduled task');
           }
-        }
+
 
         // Recover tasks orphaned by crashed workers while holding the lock.
         await TaskQueue.recoverStaleTasks();
 
-        // Release lock
-        const currentLock = await client.get(lockKey);
-        if (currentLock === lockId) {
-          await client.del(lockKey);
+        // Release lock atomically
+        const releaseScript = `
+          if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del", KEYS[1])
+          else
+            return 0
+          end
+        `;
+        await client.eval(releaseScript, {
+          keys: [lockKey],
+          arguments: [lockId]
+        });
         }
       } catch (error) {
         logger.error({ error }, 'Scheduler error');
