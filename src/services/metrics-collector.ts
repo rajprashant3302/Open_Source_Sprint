@@ -2,6 +2,7 @@ import { getRedisClient } from './redis';
 import logger from '../utils/logger';
 import { TaskQueue } from './task-queue';
 import { WorkerPool } from './worker-pool';
+import { Task } from '../types';
 
 const METRICS_PREFIX = 'metrics:';
 const SNAPSHOT_PREFIX = 'snapshot:';
@@ -12,6 +13,22 @@ export interface SystemMetrics {
   workers: Record<string, any>;
   tasks: Record<string, any>;
   system: Record<string, any>;
+}
+
+export interface SlaEvaluation {
+  taskId: string;
+  priority: string;
+  waitMs: number;
+  targetMs: number;
+  compliant: boolean;
+}
+
+export interface SlaReport {
+  total: number;
+  compliant: number;
+  complianceRate: number; // 0-1
+  byPriority: Record<string, { total: number; compliant: number; complianceRate: number }>;
+  violations: SlaEvaluation[];
 }
 
 export class MetricsCollector {
@@ -29,6 +46,74 @@ export class MetricsCollector {
     if (max > 0) {
       this.maxSnapshots = max;
     }
+  }
+
+  /**
+   * SLA target wait time (seconds, from creation to start) per priority.
+   * Higher priorities get tighter targets. Configurable.
+   */
+  static slaTargetsSeconds: Record<string, number> = {
+    critical: 5,
+    high: 30,
+    medium: 120,
+    low: 600,
+  };
+
+  /**
+   * Evaluate a single task against its priority SLA. Wait time is measured from
+   * creation to start (or to `now` if it hasn't started yet).
+   */
+  static evaluateSla(task: Task, now: number = Date.now()): SlaEvaluation {
+    const created = new Date(task.createdAt).getTime();
+    const end = task.startedAt ? new Date(task.startedAt).getTime() : now;
+    const waitMs = Math.max(0, end - created);
+    const targetSec = this.slaTargetsSeconds[task.priority] ?? this.slaTargetsSeconds.medium;
+    const targetMs = targetSec * 1000;
+    return {
+      taskId: task.id,
+      priority: task.priority,
+      waitMs,
+      targetMs,
+      compliant: waitMs <= targetMs,
+    };
+  }
+
+  /**
+   * Aggregate SLA compliance across tasks, overall and per priority, and log an
+   * alert for any violations so operators can react when an SLA is breached.
+   */
+  static checkSlaCompliance(tasks: Task[], now: number = Date.now()): SlaReport {
+    const byPriority: SlaReport['byPriority'] = {};
+    const violations: SlaEvaluation[] = [];
+    let compliant = 0;
+
+    for (const task of tasks) {
+      const evalResult = this.evaluateSla(task, now);
+      const bucket = (byPriority[evalResult.priority] ??= { total: 0, compliant: 0, complianceRate: 0 });
+      bucket.total++;
+      if (evalResult.compliant) {
+        bucket.compliant++;
+        compliant++;
+      } else {
+        violations.push(evalResult);
+      }
+    }
+
+    for (const bucket of Object.values(byPriority)) {
+      bucket.complianceRate = bucket.total > 0 ? bucket.compliant / bucket.total : 1;
+    }
+
+    if (violations.length > 0) {
+      logger.warn({ violations: violations.length }, 'SLA violations detected');
+    }
+
+    return {
+      total: tasks.length,
+      compliant,
+      complianceRate: tasks.length > 0 ? compliant / tasks.length : 1,
+      byPriority,
+      violations,
+    };
   }
 
   /**
