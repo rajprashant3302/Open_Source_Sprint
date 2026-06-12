@@ -34,12 +34,13 @@ export class QueueFullError extends Error {
 
 export class TaskQueue {
   /**
-   * Create a new task and add it to the queue
+   * Create a new task and add it to the queue.
+   * The payload must be a valid JSON object. If null or undefined is provided, it defaults to an empty object.
    */
   static async createTask(
     name: string,
     handler: string,
-    payload: Record<string, any>,
+    payload: Record<string, any> | null | undefined,
     options: {
       queueName?: string;
       priority?: 'low' | 'medium' | 'high' | 'critical';
@@ -56,6 +57,12 @@ export class TaskQueue {
     const taskId = uuidv4();
     const queueName = options.queueName || 'default';
 
+    if (payload !== undefined && payload !== null && (typeof payload !== 'object' || Array.isArray(payload))) {
+      throw new Error('Payload must be a valid object');
+    }
+
+    const finalPayload = payload || {};
+
     const queueKey = `${QUEUE_PREFIX}${queueName}`;
     const maxQueueSize = parseInt(process.env.MAX_QUEUE_SIZE || '10000', 10);
     const currentSize = await client.zCard(queueKey);
@@ -63,7 +70,6 @@ export class TaskQueue {
     if (currentSize >= maxQueueSize) {
       throw new QueueFullError(queueName, maxQueueSize);
     }
-
     const task: Task = {
       id: taskId,
       name,
@@ -71,7 +77,7 @@ export class TaskQueue {
       priority: options.priority || 'medium',
       status: 'pending',
       handler,
-      payload,
+      payload: finalPayload,
       retries: 0,
       maxRetries: options.maxRetries || 3,
       timeout: options.timeout || 30000,
