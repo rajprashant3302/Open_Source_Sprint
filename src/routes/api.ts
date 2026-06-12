@@ -116,6 +116,28 @@ router.get('/tasks/:taskId', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/tasks/:taskId/cancel', async (req: Request, res: Response) => {
+  try {
+    const { taskId } = req.params;
+    const cancelled = await TaskQueue.cancelTask(taskId);
+
+    // Signal any in-flight execution to stop cooperatively.
+    TaskExecutor.cancel(taskId);
+
+    if (!cancelled) {
+      return res.status(409).json({ error: 'Task cannot be cancelled (already finished)' });
+    }
+
+    res.json({ success: true, taskId });
+  } catch (error: any) {
+    if (error.message?.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    logger.error({ error }, 'Cancel task error');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/queues/:queueName/tasks', async (req: Request, res: Response) => {
   try {
     const { queueName } = req.params;
